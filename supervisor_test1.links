@@ -1,0 +1,62 @@
+typename Message = [|ProcessFailed:Int |];
+typename Id = Int;
+typename Name = String;
+typename Process = (processName: String);
+
+var processlist =
+  [(1, (processName = "worker1")),
+   (2, (processName = "worker2"))];
+
+fun failed(id,map) {
+  switch (lookup(id, map)) {
+    case Just(process) -> println("process Failed: "^^process.processName)
+    case Nothing -> println("Invalid process!")
+  }
+}
+
+fun wrapper(f, supervisor, n) {
+    var _ = spawn {
+        try f() as x in {()}
+        otherwise {
+            supervisor ! ProcessFailed(n)
+        }
+    };
+    ()
+}
+
+fun supervisor(fs,f1,f2) {
+    var pid=self();
+    var fsMap=mapi(fun(f,i) { 
+        spawn{wrapper(f,pid,i+1)}; 
+        (i+1,(process=f))
+    }, fs);
+    fsMap;
+
+    fun supervisionLoop(fs,f1,f2){
+        receive {
+            case ProcessFailed(int) -> failed(int,processlist);supervisor(fs,f1,f2)
+        }
+    }
+    supervisionLoop
+}
+
+# worker1 never raises a failure, and worker2 always raises a failure
+fun worker1() {
+    if(1+1<>2){
+        raise
+    }
+    else{
+        println("OK!")
+    }
+}
+
+fun worker2() {
+    if(1+1==2){
+        raise
+    }
+    else{
+        println("OK!")
+    }
+}
+
+ignore(spawn { supervisor([worker1,worker2],worker1,worker2) })
