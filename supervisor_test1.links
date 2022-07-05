@@ -10,7 +10,7 @@ var processlist =
 fun failed(id,map) {
   switch (lookup(id, map)) {
     case Just(process) -> println("process Failed: "^^process.processName)
-    case Nothing -> println("Invalid process!")
+    case Nothing -> ()
   }
 }
 
@@ -24,20 +24,24 @@ fun wrapper(f, supervisor, n) {
     ()
 }
 
-fun supervisor(fs,f1,f2) {
+fun supervisor(fs) {
     var pid=self();
     var fsMap=mapi(fun(f,i) { 
-        spawn{wrapper(f,pid,i+1)}; 
+        ignore(spawn{wrapper(f,pid,i+1)});
         (i+1,(process=f))
     }, fs);
-    fsMap;
 
-    fun supervisionLoop(fs,f1,f2){
+    fun supervisionLoop(fs){
         receive {
-            case ProcessFailed(int) -> failed(int,processlist);supervisor(fs,f1,f2)
+            case ProcessFailed(int) -> 
+                failed(int,processlist);
+                switch (lookup(int, fsMap)) {
+                    case Just(x) -> ignore(spawn{wrapper(x.process,pid,int)});supervisionLoop(fs)
+                    case Nothing -> ()
+                }
         }
     }
-    supervisionLoop
+    supervisionLoop(fs)
 }
 
 # worker1 never raises a failure, and worker2 always raises a failure
@@ -59,4 +63,4 @@ fun worker2() {
     }
 }
 
-ignore(spawn { supervisor([worker1,worker2],worker1,worker2) })
+ignore(spawn { supervisor([worker1,worker2]) })
