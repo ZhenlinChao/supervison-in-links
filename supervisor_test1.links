@@ -1,16 +1,30 @@
 typename Message = [|ProcessFailed:Int |];
 typename Id = Int;
 typename Name = String;
-typename Process = (processName: String);
+typename Times = Int;
 
-var processlist =
-  [(1, (processName = "worker1")),
-   (2, (processName = "worker2"))];
+fun upd(xs, x, toUpd) {
+    switch (xs) {
+        case [] -> []
+        case (k, val) :: xs->
+            if (k == x) {
+                (k, toUpd) :: xs
+            } else {
+                (k, val) :: upd(xs, x, toUpd)
+            }
+    }
+}
 
-fun failed(id,map) {
+# Report the detail of failure
+fun failed(id,map,time) {
   switch (lookup(id, map)) {
-    case Just(process) -> println("process Failed: "^^process.processName)
-    case Nothing -> ()
+    case Just(x) ->    
+        println("process Failed: "^^x.processName);
+        println("Failed times:"^^ intToString(x.numFails+1));
+        println("Failed Date:"^^ show(time))        
+                  
+    case Nothing -> 
+        println("nothing in failed")
   }
 }
 
@@ -27,24 +41,52 @@ fun wrapper(f, supervisor, n) {
 fun supervisor(fs) {
     var pid=self();
     var fsMap=mapi(fun(f,i) { 
-        ignore(spawn{wrapper(f,pid,i+1)});
-        (i+1,(process=f))
+        ignore(spawn{wrapper(f.2,pid,i+1)});
+        (i+1,(processName=f.1, process=f.2, numFails=0, lastFailed=beginningOfTime, times=f.3, duration=f.4, fails=[]))
     }, fs);
 
-    fun supervisionLoop(fs){
+    fun supervisionLoop(map){
         receive {
-            case ProcessFailed(int) -> 
-                failed(int,processlist);
-                switch (lookup(int, fsMap)) {
-                    case Just(x) -> ignore(spawn{wrapper(x.process,pid,int)});supervisionLoop(fs)
-                    case Nothing -> ()
-                }
+            case ProcessFailed(int) ->
+                var time=now();
+                failed(int,map,time);
+
+                # the supervision failes if one of the process failed too many times in the a certain time, -1 means no limit.
+                switch (lookup(int, map)) {
+                    case Just(x) ->
+                        var b=x.fails ++ [time];
+                        var start=if(x.numFails+1 < x.times){
+                            0
+                        }
+                        else{
+                            x.numFails+1-x.times
+                        };
+                        if(x.times == -1){
+                            var map= upd(map,int,(processName=x.processName, process=x.process, numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), times=x.times, duration=x.duration, fails=b));
+                            ignore(spawn{wrapper(x.process,pid,int)});
+                            supervisionLoop(map)
+                        }
+                        else{
+                            if(x.numFails+1 < x.times || ((dateToInt(selectElem(b,length(b)-1))-dateToInt(selectElem(b,start))) > x.duration)){
+                                var map= upd(map,int,(processName=x.processName, process=x.process, numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), times=x.times, duration=x.duration, fails=b));
+                                ignore(spawn{wrapper(x.process,pid,int)});
+                                supervisionLoop(map)
+                            }
+                            else{
+                                print("Supervision Error!");
+                                raise
+                            }
+                        }
+       
+                    case Nothing -> 
+                        println("Nothing in supervisionloop")
+                }     
         }
     }
-    supervisionLoop(fs)
+    supervisionLoop(fsMap)
 }
 
-# worker1 never raises a failure, and worker2 always raises a failure
+# worker1 never raises a failure, worker2 always raises a failure and worker 3 sometimes raises a failure.
 fun worker1() {
     if(1+1<>2){
         raise
@@ -63,4 +105,14 @@ fun worker2() {
     }
 }
 
-ignore(spawn { supervisor([worker1,worker2]) })
+fun worker3() {
+    var x=random();
+    if(x>0.01){
+        raise
+    }
+    else{
+        println("OK!")
+    }
+}
+
+ignore(spawnAngel { supervisor([("worker1",worker1,1,600),("worker2",worker2,10000,30),("worker3",worker3,-1,2)]) })
