@@ -1,0 +1,48 @@
+#example for simple supervision
+
+open import Supervisor;
+
+fun worker1() {
+    if(1+1<>2){
+        raise
+    }
+    else{
+        println("worker 2: OK!")
+    }
+}
+
+fun worker2() {
+    if(1+1==2){
+        raise
+    }
+    else{
+        println("worker 2: OK!")
+    }
+}
+
+fun worker3() {
+    var x=random();
+    if(x>0.99){
+        raise
+    }
+    else{
+        println("worker 3: OK!")
+    }
+}
+
+var process1=((createSpec(worker1)
+!>withName("worker1"))
+!>withMaxFails(1))
+!>withFailsWindow(600);
+
+var process2=((createSpec(worker2)
+!>withName("worker2"))
+!>withMaxFails(1000))
+!>withFailsWindow(30);
+
+var process3=createSpec(worker3)
+!>withName("worker3");
+
+ignore(spawnAngel { supervise([process1,process3,process2]) })
+#ignore(spawnAngel { one_for_all([process1,process3,process2]) })
+#ignore(spawnAngel { rest_for_one([process1,process3,process2]) })

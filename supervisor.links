@@ -1,0 +1,300 @@
+typename Message = [|ProcessFailed:Int | Kill |];
+typename Id = Int;
+typename Name = String;
+typename Times = Int;
+typename SupervisionSpec = (name: Maybe(String), fn: () {}~> (), maxFails: Int, failWindow: Int);
+typename KillablePID(a::Type) = Process({hear: [| Kill | Wrap: a |]});
+
+infixr 9 !>;
+sig !> : (a, (a) -e-> b) -e-> b
+op x !> f {
+  f(x)
+}
+
+fun createSpec(f){
+    (name = "", fn = f, maxFails = (-1), failWindow = 0)
+}
+
+fun withName(x)(y) { 
+    (name = x, fn = y.fn, maxFails = y.maxFails, failWindow = y.failWindow) 
+}
+
+fun withMaxFails(x)(y) {
+    (name = y.name, fn = y.fn, maxFails =x, failWindow = y.failWindow)
+}
+
+fun withFailsWindow(x)(y) {
+    (name = y.name, fn = y.fn, maxFails = y.maxFails, failWindow = x)
+}
+
+# update an element in the list.
+fun upd(xs, x, toUpd) {
+    switch (xs) {
+        case [] -> []
+        case (k, val) :: xs->
+            if (k == x) {
+                (k, toUpd) :: xs
+            } else {
+                (k, val) :: upd(xs, x, toUpd)
+            }
+    }
+}
+
+# remove all the elements before the element from the list.
+fun removePrev(xs, x) {
+    switch (xs) {
+        case [] -> []
+        case (k, val) :: xs->
+            if (k == x) {
+                (k, val) :: xs
+            } else {
+                removePrev(xs, x)
+            }
+    }
+}
+
+# Report the detail of failure
+fun failed(id, map, time) {
+  switch (lookup(id, map)) {
+    case Just(x) ->    
+        println("process Failed: "^^x.processName^^
+        "\nFailed times:"^^ intToString(x.numFails+1)^^
+        "\nFailed Date:"^^ show(time))        
+                  
+    case Nothing -> 
+        println("nothing in failed")
+  }
+}
+
+fun recvWrap(f, map, pid) {
+    receive {
+        case Wrap(int) -> 
+            switch (lookup(int, map)){
+                case Just(x) ->
+                   f(x.process,pid,int) 
+                case Nothing -> 
+                    println("Nothing in wrapping")
+            }
+        case Kill -> exit("received quit message")
+    }
+}
+
+fun wrapper(f, supervisor, n) {
+    var _ = spawn {
+        try f() as x in {()}
+        otherwise {
+            supervisor ! ProcessFailed(n)
+        }
+    };
+    ()
+}
+
+sig kill : (KillablePID(a)) ~> ()
+fun kill(pid) {
+    pid ! Kill
+}
+
+sig sendWrap : (KillablePID(a), a) ~> ()
+fun sendWrap(pid, int) {
+    pid ! Wrap(int)
+}
+
+fun proc(map, pid){
+    ignore(recvWrap(fun(f, supervisor, n) {
+        var _ = spawn {
+            try f() as x in {()}
+            otherwise {
+                supervisor ! ProcessFailed(n)
+            }
+        };
+        ()
+    }, map, pid));
+    proc(map, pid)
+}
+
+
+# Restart Strategy: one_for_one
+fun supervise(fs) {
+    var pid=self();
+    var fsMap=mapi(fun(f,i) { 
+        ignore(spawn{wrapper(f.fn,pid,i+1)});
+        (i+1,(processName=f.name, process=f.fn, numFails=0, 
+        lastFailed=beginningOfTime, times=f.maxFails, duration=f.failWindow, fails=[]))
+    }, fs);
+
+    fun supervisionLoop(map){
+        receive {
+            case ProcessFailed(int) ->
+                var time=now();
+                failed(int,map,time);
+
+                # the supervision failes if one of the process failed too many times in the a certain time, -1 means no limit.
+                switch (lookup(int, map)) {
+                    case Just(x) ->
+                        var b=x.fails ++ [time];
+                        var start=if(x.numFails+1 < x.times){
+                            0
+                        }
+                        else{
+                            x.numFails+1-x.times
+                        };
+                        if(x.times == -1){
+                            var map= upd(map,int,(processName=x.processName, process=x.process, 
+                                numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), 
+                                times=x.times, duration=x.duration, fails=b));
+                            ignore(spawn{wrapper(x.process,pid,int)});
+                            supervisionLoop(map)
+                        }
+                        else{
+                            if(x.numFails+1 < x.times || 
+                            ((dateToInt(selectElem(b,length(b)-1))-dateToInt(selectElem(b,start))) > x.duration)){
+                                var map= upd(map,int,(processName=x.processName, process=x.process, 
+                                    numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), 
+                                    times=x.times, duration=x.duration, fails=b));
+                                ignore(spawn{wrapper(x.process,pid,int)});
+                                supervisionLoop(map)
+                            }
+                            else{
+                                print("Supervision Error!");
+                                raise
+                            }
+                        }
+       
+                    case Nothing -> 
+                        println("Nothing in supervisionloop")
+                }     
+        }
+    }
+    supervisionLoop(fsMap)
+}
+
+# Restart Strategy: one_for_all
+fun one_for_all(fs) {
+    var pid=self();
+    var fsMap=mapi(fun(f,i) { 
+        (i+1,(processName=f.name, process=f.fn, numFails=0, 
+        lastFailed=beginningOfTime, times=f.maxFails, duration=f.failWindow, fails=[]))
+    }, fs);
+    var pid2 = spawn{proc(fsMap, pid)};
+
+    var startAll=mapi(fun(f,i) { 
+        sendWrap(pid2,i+1)
+    }, fsMap);
+
+    fun supervisionLoop(map){
+        receive {
+            case ProcessFailed(int) ->
+                var time=now();
+                failed(int,map,time);
+
+                # the supervision failes if one of the process failed too many times in the a certain time, -1 means no limit.
+                switch (lookup(int, map)) {
+                    case Just(x) ->
+                        var b=x.fails ++ [time];
+                        var start=if(x.numFails+1 < x.times){
+                            0
+                        }
+                        else{
+                            x.numFails+1-x.times
+                        };
+                        if(x.times == -1){
+                            kill(pid2);
+                            var pid2 = spawn{proc(fsMap, pid)};
+                            var map= upd(map,int,(processName=x.processName, process=x.process, 
+                            numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), 
+                            times=x.times, duration=x.duration, fails=b));
+                            var startAll=mapi(fun(f,i) { sendWrap(pid2,i+1)}, map);
+                            supervisionLoop(map)
+                        }
+                        else{
+                            if(x.numFails+1 < x.times || 
+                            ((dateToInt(selectElem(b,length(b)-1))-dateToInt(selectElem(b,start))) > x.duration)){
+                                kill(pid2);
+                                var pid2 = spawn{proc(fsMap, pid)};
+                                var map= upd(map,int,(processName=x.processName, process=x.process, 
+                                numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), 
+                                times=x.times, duration=x.duration, fails=b));
+                                var startAll=mapi(fun(f,i) { sendWrap(pid2,i+1)}, map);
+                                supervisionLoop(map)
+                            }
+                            else{
+                                print("Supervision Error!");
+                                raise
+                            }
+                        }
+       
+                    case Nothing -> 
+                        println("Nothing in supervisionloop")
+                }    
+        }
+    }
+    supervisionLoop(fsMap)
+}
+
+# Restart Strategy: rest_for_one
+fun rest_for_one(fs) {
+    var pid=self();
+    var fsMap=mapi(fun(f,i) { 
+        (i+1,(processName=f.name, process=f.fn, numFails=0, 
+        lastFailed=beginningOfTime, times=f.maxFails, duration=f.failWindow, fails=[]))
+    }, fs);
+    var pid2 = spawn{proc(fsMap, pid)};
+
+    var startAll=mapi(fun(f,i) { 
+        sendWrap(pid2,i+1)
+    }, fsMap);
+
+    fun supervisionLoop(map){
+        receive {
+            case ProcessFailed(int) ->
+                var time=now();
+                failed(int,map,time);
+                
+                # the supervision failes if one of the process failed too many times in the a certain time, -1 means no limit.
+                switch (lookup(int, map)) {
+                    case Just(x) ->
+                        var b=x.fails ++ [time];
+                        var start=if(x.numFails+1 < x.times){
+                            0
+                        }
+                        else{
+                            x.numFails+1-x.times
+                        };
+                        #var map=removePrev(map,int);
+                        if(x.times == -1){
+                            kill(pid2);
+                            var pid2 = spawn{proc(fsMap, pid)};
+                            var map= upd(map,int,(processName=x.processName, process=x.process, 
+                            numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), 
+                            times=x.times, duration=x.duration, fails=b));
+                            var map = removePrev(map,int);
+                            var removed = int-1;
+                            var startRest = mapi(fun(f,i) { sendWrap(pid2, i+1+removed)}, map);
+                            supervisionLoop(map)
+                        }
+                        else{
+                            if(x.numFails+1 < x.times || 
+                            ((dateToInt(selectElem(b,length(b)-1))-dateToInt(selectElem(b,start))) > x.duration)){
+                                kill(pid2);
+                                var pid2 = spawn{proc(fsMap, pid)};
+                                var map = upd(map,int,(processName=x.processName, process=x.process, 
+                                numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), 
+                                times=x.times, duration=x.duration, fails=b));
+                                var map = removePrev(map,int);
+                                var removed = int-1;
+                                var startRest = mapi(fun(f,i) { sendWrap(pid2, i+1+removed)}, map);
+                                supervisionLoop(map)
+                            }
+                            else{
+                                print("Supervision Error!");
+                                raise
+                            }
+                        }
+       
+                    case Nothing -> 
+                        println("Nothing in supervisionloop")
+                }     
+        }
+    }
+    supervisionLoop(fsMap)
+}
