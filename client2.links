@@ -1,0 +1,68 @@
+# supervision hierarchies
+open import Supervisor;
+
+fun worker1() {
+    var asList = [("Bluebell", (id=1, col="Blue")), ("Grass", (id=2, col="Red")), ("Glass", (id=2, col="no"))];
+    var asList=upd(asList, "Grass", (id=2, col="Green"));
+    if(selectElem(asList,1).2.col=="Green" && length(asList)==3){
+        println("worker 1: OK!")
+    }
+    else{
+        raise
+    }
+}
+
+fun worker2() {
+    var x=random();
+    var y=random();
+    var z=random();
+    if(x>0.9 && y>0.7 && z>0.5){
+        println("worker 2: OK!")
+    }
+    else{
+        raise
+    }
+}
+
+fun worker3() {
+    var x=random();
+    fun runs(){
+        if(x<1.0){
+            raise
+        }
+        else{
+            println("worker 3: OK!")
+        }
+    }
+    runs()
+}
+
+var process1=((createSpec(worker1)
+!>withName("worker1"))
+!>withMaxFails(1))
+!>withFailsWindow(600);
+
+var process2=((createSpec(worker2)
+!>withName("worker2"))
+!>withMaxFails(100))
+!>withFailsWindow(10);
+
+var process3=((createSpec(worker3)
+!>withName("worker3"))
+!>withMaxFails(1000))
+!>withFailsWindow(30);
+
+fun supervision(){
+    supervise([process1,process3,process2])
+}
+
+var process4=((createSpec(supervision)
+!>withName("super"))
+!>withMaxFails(10))
+!>withFailsWindow(100);
+
+#ignore(spawnAngel { supervise([process1,process3,process2]) })
+#ignore(spawnAngel { one_for_all([process1,process3,process2]) })
+#ignore(spawnAngel { rest_for_one([process1,process3,process2]) })
+
+ignore(spawnAngel { supervise([process4]) })
