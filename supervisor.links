@@ -11,6 +11,7 @@ op x !> f {
   f(x)
 }
 
+# functions for creating process
 fun createSpec(f){
     (name = "", fn = f, maxFails = (-1), failWindow = 0)
 }
@@ -66,6 +67,7 @@ fun failed(id, map, time) {
   }
 }
 
+# receive commands of a process
 fun recvWrap(f, map, pid) {
     receive {
         case Wrap(int) -> 
@@ -79,9 +81,10 @@ fun recvWrap(f, map, pid) {
     }
 }
 
+# wrap the process and send error message to the supervision function
 fun wrapper(f, supervisor, n) {
     var _ = spawn {
-        try f() as x in {()}
+        try f() as _ in {()}
         otherwise {
             supervisor ! ProcessFailed(n)
         }
@@ -89,20 +92,23 @@ fun wrapper(f, supervisor, n) {
     ()
 }
 
+# send a kill command to the process
 sig kill : (KillablePID(a)) ~> ()
 fun kill(pid) {
     pid ! Kill
 }
 
+# send a wrap command to the process
 sig sendWrap : (KillablePID(a), a) ~> ()
 fun sendWrap(pid, int) {
     pid ! Wrap(int)
 }
 
+# wrapper function for one_for_all and rest_for_one
 fun proc(map, pid){
     ignore(recvWrap(fun(f, supervisor, n) {
         var _ = spawn {
-            try f() as x in {()}
+            try f() as _ in {()}
             otherwise {
                 supervisor ! ProcessFailed(n)
             }
@@ -116,6 +122,8 @@ fun proc(map, pid){
 # Restart Strategy: one_for_one
 fun supervise(fs) {
     var pid=self();
+
+    # create a map for processes and start them.
     var fsMap=mapi(fun(f,i) { 
         ignore(spawn{wrapper(f.fn,pid,i+1)});
         (i+1,(processName=f.name, process=f.fn, numFails=0, 
@@ -123,6 +131,8 @@ fun supervise(fs) {
     }, fs);
 
     fun supervisionLoop(map){
+
+        # receive the failure message and print it.
         receive {
             case ProcessFailed(int) ->
                 var time=now();
@@ -138,6 +148,8 @@ fun supervise(fs) {
                         else{
                             x.numFails+1-x.times
                         };
+
+                        # update the map and restart the process that failed.
                         if(x.times == -1){
                             var map= upd(map,int,(processName=x.processName, process=x.process, 
                                 numFails=x.numFails+1, lastFailed=selectElem(b,length(b)-1), 
@@ -171,12 +183,15 @@ fun supervise(fs) {
 # Restart Strategy: one_for_all
 fun one_for_all(fs) {
     var pid=self();
+
+    # create a map for processes.
     var fsMap=mapi(fun(f,i) { 
         (i+1,(processName=f.name, process=f.fn, numFails=0, 
         lastFailed=beginningOfTime, times=f.maxFails, duration=f.failWindow, fails=[]))
     }, fs);
     var pid2 = spawn{proc(fsMap, pid)};
 
+    # start all the processes and send them to wrap function.
     var startAll=mapi(fun(f,i) { 
         sendWrap(pid2,i+1)
     }, fsMap);
@@ -197,6 +212,8 @@ fun one_for_all(fs) {
                         else{
                             x.numFails+1-x.times
                         };
+
+                        # if a process failed, kill all process, update the map and then restart them.
                         if(x.times == -1){
                             kill(pid2);
                             var pid2 = spawn{proc(fsMap, pid)};
@@ -234,12 +251,15 @@ fun one_for_all(fs) {
 # Restart Strategy: rest_for_one
 fun rest_for_one(fs) {
     var pid=self();
+
+    # create a map for processes.
     var fsMap=mapi(fun(f,i) { 
         (i+1,(processName=f.name, process=f.fn, numFails=0, 
         lastFailed=beginningOfTime, times=f.maxFails, duration=f.failWindow, fails=[]))
     }, fs);
     var pid2 = spawn{proc(fsMap, pid)};
 
+    # start all the processes and send them to wrap function.
     var startAll=mapi(fun(f,i) { 
         sendWrap(pid2,i+1)
     }, fsMap);
@@ -260,7 +280,8 @@ fun rest_for_one(fs) {
                         else{
                             x.numFails+1-x.times
                         };
-                        #var map=removePrev(map,int);
+
+                        # if a process failed, kill all process, update the map and then restart the processes after it.
                         if(x.times == -1){
                             kill(pid2);
                             var pid2 = spawn{proc(fsMap, pid)};
